@@ -79,6 +79,7 @@
     .\MigrateInstances.ps1 @params
 
     .NOTES
+    - Author: Vaughan Nicholls
     - This script does not handle the setup of Always On Availability Groups, replication, or log shipping, which must be done separately.
     - Ensure the dbatools module is installed before running this script.
     - The script will attempt to elevate privileges if not run as administrator.
