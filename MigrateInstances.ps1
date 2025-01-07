@@ -1,8 +1,4 @@
-<<<<<<< HEAD
 <#
-=======
-﻿<#
->>>>>>> 42fbb9a (Initial commit of MigrateInstances.ps1)
     .SYNOPSIS
     Migrates SQL Server objects, user databases and updates user database settings.
 
@@ -323,8 +319,4 @@ if ($primaryInstances.Count -eq 0) {
     Write-Log -Message "No primary instances (AGPrimary, LogShippingPrimary, or Standalone) found among target instances." -Level "ERROR"
 }
 
-<<<<<<< HEAD
 Write-Log -Message "Migration process completed." -Level "SUCCESS"
-=======
-Write-Log -Message "Migration process completed." -Level "SUCCESS"
->>>>>>> 42fbb9a (Initial commit of MigrateInstances.ps1)
