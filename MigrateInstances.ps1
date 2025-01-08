@@ -215,6 +215,11 @@ function Migrate-Databases {
     $DatabasesCount = $Databases.Count
     Write-Log -Message "Starting database migration process." -Level "INFO"
     
+    $successfulRestores = 0
+    $failedRestores = 0
+    $skippedDatabases = 0
+    $missingBackups = 0
+
     if ($LocalBackupDir -and $NetworkBackupDir) {
         Write-Log -Message "Both LocalBackupDir and NetworkBackupDir are specified. Using LocalBackupDir for migration." -Level "INFO"
     }
@@ -240,6 +245,7 @@ function Migrate-Databases {
                     $existingDatabase = Get-DbaDatabase -SqlInstance $DestinationInstance -Database $Database -ErrorAction SilentlyContinue
                     if ($existingDatabase) {
                         Write-Log -Message "Database '$Database' already exists on $DestinationInstance. Skipping restore." -Level "WARNING"
+                        $skippedDatabases++
                     } else {
                         try {
                             Write-Log -Message "Starting restore of '$Database' from '$LocalBackupDir'." -Level "INFO"
@@ -249,24 +255,30 @@ function Migrate-Databases {
                             # Check the RestoreComplete property
                             if ($restoreResult.RestoreComplete) {
                                 Write-Log -Message "Successfully restored database '$Database' from local backup. Completed migration for ($CompletedCount of $DatabasesCount) databases." -Level "SUCCESS"
+                                $successfulRestores++
                             } else {
                                 Write-Log -Message "Restore of database '$Database' did not complete successfully." -Level "ERROR"
+                                $failedRestores++
                             }
                         }
                         catch [Microsoft.SqlServer.Management.Smo.FailedOperationException] {
                             if ($_.Exception.Message -like "*access denied*") {
                                 Write-Log -Message "Insufficient permissions to restore database '$Database'. Skipping." -Level "WARNING"
+                                $failedRestores++
                             }
                             else {
                                 Write-Log -Message "Failed to restore '$Database': $_" -Level "ERROR"
+                                $failedRestores++
                             }
                         }
                         catch {
                             Write-Log -Message "Unexpected error restoring '$Database': $_" -Level "ERROR"
+                            $failedRestores++
                         }
                     }
                 } else {
                     Write-Log -Message "Backup file for '$Database' not found in $LocalBackupDir." -Level "ERROR"
+                    $missingBackups++
                 }
             }
             catch {
@@ -287,19 +299,17 @@ function Migrate-Databases {
             $existingDatabase = Get-DbaDatabase -SqlInstance $DestinationInstance -Database $Database -ErrorAction SilentlyContinue
             if ($existingDatabase) {
                 Write-Log -Message "Database '$Database' already exists on $DestinationInstance. Skipping migration." -Level "WARNING"
+                $skippedDatabases++
             } else {
                 try {
                     Write-Log -Message "Starting migration of '$Database'." -Level "INFO"
                     $migrationResult = Copy-DbaDatabase -Source $SourceInstance -Destination $DestinationInstance -Database $Database -BackupRestore -SharedPath $NetworkBackupDir -SourceSqlCredential $Credential -DestinationSqlCredential $Credential -EnableException -WarningAction SilentlyContinue -ErrorAction Stop
                     Write-Log -Message "Successfully migrated database '$Database'. Completed migration for ($CompletedCount of $DatabasesCount) databases." -Level "SUCCESS"
-                
-                    # Here, we assume success because no exception was thrown
-                    if (-not $migrationResult) {
-                        Write-Log -Message "Database '$Database' migration completed but no result was returned." -Level "WARNING"
-                    }
+                    $successfulRestores++
                 }
                 catch {
                     Write-Log -Message "Failed to migrate '$Database': $_" -Level "ERROR"
+                    $failedRestores++
                 }
             }
         }
@@ -307,6 +317,13 @@ function Migrate-Databases {
     else {
         Write-Log -Message "No valid backup directory specified. Please specify either NetworkBackupDir or LocalBackupDir." -Level "ERROR"
     }
+
+    # Summary Log
+    Write-Log -Message "$DatabasesCount databases were requested for migration." -Level "INFO"
+    Write-Log -Message "Backups could not be found for $missingBackups of the requested databases." -Level "INFO"
+    Write-Log -Message "There were $skippedDatabases databases skipped as they already exist on the target." -Level "INFO"
+    Write-Log -Message "There were $failedRestores databases where a restore was attempted but failed." -Level "INFO"
+    Write-Log -Message "There were $successfulRestores databases with successful restores." -Level "INFO"
 }
 
 # Function to update database settings
