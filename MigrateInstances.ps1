@@ -9,7 +9,7 @@
     - migrates Agent credentials
     - migrates Agent proxies (to be developed)
     - migrates Agent operators (to be developed)
-    - migrates Database Mail (to be developed)
+    - migrates Database Mail
     - migrates linked servers (to be developed)
     - migrates SQL Agent jobs (to be developed)
     - migrates SQL Agent alerts(to be developed)
@@ -23,7 +23,11 @@
 
     - migrates specified databases from a source SQL Server instance to target instance(s)
     - updates various database settings
+    
     It uses dbatools for SQL operations, includes logging, credential validation, and ensures administrative privileges are present for execution.
+
+    The general approach is to skip any objects that already exist on the target. Database settings, though, will be updated, even if the database already exists.
+    This is to ensure that database settings adhere to the desired standards and consistency. As always, test in a suitable non-Production environment.
 
     .PARAMETER myCredential
     The credentials used to connect to the SQL Server instances.
@@ -573,6 +577,107 @@ function Migrate-Credentials {
     }
 }
 
+# Define function to check Database Mail pre-requisites and enable them if not currently enabled
+function Ensure-DatabaseMailPrerequisites {
+    param (
+        [Parameter(Mandatory=$true)]
+        [array]$TargetInstances,
+        [Parameter(Mandatory=$true)]
+        [PSCredential]$Credential
+    )
+
+    foreach ($Target in $TargetInstances) {
+        $TargetInstanceName = if ($Target.Instance -eq "MSSQLSERVER") { $Target.HostServer } else { "$($Target.HostServer)\$($Target.Instance)" }
+        
+        # Check if Database Mail is enabled
+        $mailConfig = Get-DbaDbMail -SqlInstance $TargetInstanceName -SqlCredential $Credential -EnableException | Out-Null
+        if (-not $mailConfig) {
+            Write-Log -Message "Database Mail is not configured on $($TargetInstanceName). Enabling Database Mail..." -Level "INFO"
+            try {
+                # Use T-SQL to enable Database Mail
+                $tSql = @"
+                USE msdb;
+                EXECUTE msdb.dbo.sp_configure 'show advanced options', 1;
+                RECONFIGURE;
+                EXECUTE msdb.dbo.sp_configure 'Database Mail XPs', 1;
+                RECONFIGURE;
+"@
+                Invoke-DbaQuery -SqlInstance $TargetInstanceName -SqlCredential $Credential -Query $tSql -EnableException | Out-Null
+                Write-Log -Message "Database Mail enabled on $($TargetInstanceName)." -Level "SUCCESS"
+            }
+            catch {
+                Write-Log -Message "Failed to enable Database Mail on $($TargetInstanceName): $_" -Level "ERROR"
+            }
+        } else {
+            Write-Log -Message "Database Mail is already configured on $($TargetInstanceName)." -Level "INFO"
+        }
+        
+        # Check if Service Broker is enabled for msdb
+        $dbBrokerStatus = Get-DbaDbServiceBrokerService -SqlInstance $TargetInstanceName -Database msdb -SqlCredential $Credential -EnableException | Out-Null
+        if (-not $dbBrokerStatus.IsBrokerEnabled) {
+            Write-Log -Message "Service Broker is not enabled for msdb on $($TargetInstanceName). Enabling Service Broker..." -Level "INFO"
+            try {
+                # Use T-SQL to enable Service Broker
+                Invoke-DbaQuery -SqlInstance $TargetInstanceName -SqlCredential $Credential -Database master -Query "ALTER DATABASE msdb SET ENABLE_BROKER WITH ROLLBACK IMMEDIATE;" -EnableException | Out-Null
+                Write-Log -Message "Service Broker enabled for msdb on $($TargetInstanceName)." -Level "SUCCESS"
+            }
+            catch {
+                Write-Log -Message "Failed to enable Service Broker for msdb on $($TargetInstanceName): $_" -Level "ERROR"
+            }
+        } else {
+            Write-Log -Message "Service Broker is already enabled for msdb on $($TargetInstanceName)." -Level "INFO"
+        }
+    }
+}
+
+# Define the function to migrate Database Mail configurations
+function Migrate-DatabaseMail {
+    param (
+        [string]$SourceInstance,
+        [array]$TargetInstances,
+        [PSCredential]$Credential
+    )
+    try {
+        # Retrieve Database Mail configurations from the source instance
+        $dbMailConfigs = Get-DbaDbMail -SqlInstance $SourceInstance -SqlCredential $Credential -EnableException
+
+        if ($dbMailConfigs) {
+            Write-Log -Message "Found Database Mail configurations on source instance $SourceInstance. Proceeding with migration." -Level "INFO"
+
+            # Loop through each target instance
+            foreach ($Target in $TargetInstances) {
+                $TargetInstanceName = if ($Target.Instance -eq "MSSQLSERVER") { $Target.HostServer } else { "$($Target.HostServer)\$($Target.Instance)" }
+
+                try {
+                    # Check if Database Mail is already configured on the target
+                    $existingDbMail = Get-DbaDbMail -SqlInstance $TargetInstanceName -SqlCredential $Credential -EnableException | Out-Null
+
+                    if ($existingDbMail) {
+                        Write-Log -Message "Database Mail is already configured on $TargetInstanceName. Skipping migration." -Level "WARNING"
+                    } else {
+                        # Migrate Database Mail to the target instance
+                        $migrationResult = Copy-DbaDbMail -Source $SourceInstance -Destination $TargetInstanceName -SourceSqlCredential $Credential -DestinationSqlCredential $Credential -EnableException | Out-Null
+
+                        if ($migrationResult) {
+                            Write-Log -Message "Successfully migrated Database Mail configurations to $TargetInstanceName." -Level "SUCCESS"
+                        } else {
+                            Write-Log -Message "Failed to migrate Database Mail configurations to $TargetInstanceName." -Level "ERROR"
+                        }
+                    }
+                }
+                catch {
+                    Write-Log -Message "An error occurred while migrating Database Mail to $($TargetInstanceName): $_" -Level "ERROR"
+                }
+            }
+        } else {
+            Write-Log -Message "No Database Mail configurations found on source instance $SourceInstance. No migration performed." -Level "WARNING"
+        }
+    }
+    catch {
+        Write-Log -Message "An error occurred while retrieving Database Mail configurations from source: $_" -Level "ERROR"
+    }
+}
+
 # Main script execution
 EnsureAdminPrivileges
 
@@ -606,6 +711,8 @@ if ($primaryInstances.Count -eq 0) {
         Migrate-Logins -SourceInstance $SourceInstance -DestinationInstance $PrimaryInstanceName -LoginType $LoginType -ExcludedLogins $ExcludedLogins -Credential $myCredential
         Add-LoginsToRoles -SourceInstance $SourceInstance -DestinationInstance $PrimaryInstanceName -Credential $myCredential -ExcludedLogins $ExcludedLogins
         Migrate-Credentials -SourceInstance $SourceInstance -TargetInstances $TargetInstances -AgentCredentials $AgentCredentials -Credential $myCredential
+        Ensure-DatabaseMailPrerequisites -TargetInstances $TargetInstances -Credential $myCredential
+        Migrate-DatabaseMail -SourceInstance $SourceInstance -TargetInstances $TargetInstances -Credential $myCredential
     }
 }
 
