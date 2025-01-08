@@ -445,6 +445,71 @@ function Migrate-Logins {
     }
 }
 
+# Define the function to add migrated logins to the same server roles on the target as on the source
+function Add-LoginsToRoles {
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$SourceInstance,
+        [Parameter(Mandatory=$true)]
+        [string]$DestinationInstance,
+        [Parameter(Mandatory=$true)]
+        [PSCredential]$Credential,
+        [Parameter(Mandatory=$false)]
+        [string[]]$ExcludedLogins = @()
+    )
+
+    try {
+        Write-Log -Message "Starting role assignment for logins from $SourceInstance to $DestinationInstance." -Level "INFO"
+
+        # Retrieve logins from source instance, excluding specified logins
+        $SourceLogins = Get-DbaLogin -SqlInstance $SourceInstance -SqlCredential $Credential -ExcludeLogin $ExcludedLogins
+
+        foreach ($login in $SourceLogins) {
+            $loginName = $login.Name
+            Write-Log -Message "Processing login: $loginName" -Level "INFO"
+
+            # Get roles for this login from the source
+            $sourceRoles = $login.EnumRoles() | Where-Object { $_ -ne 'public' } # Exclude public role as it's default
+
+            if ($sourceRoles.Count -gt 0) {
+                Write-Log -Message "Login $loginName has roles on source: $([string]::Join(", ", $sourceRoles))" -Level "INFO"
+                
+                # Check if the login exists on the destination
+                $destinationLogin = Get-DbaLogin -SqlInstance $DestinationInstance -SqlCredential $Credential -Login $loginName -ErrorAction SilentlyContinue
+
+                if ($destinationLogin) {
+                    # Add the login to each role it was part of on the source, if the role exists on the destination
+                    foreach ($role in $sourceRoles) {
+                        $destinationRole = Get-DbaRole -SqlInstance $DestinationInstance -SqlCredential $Credential -Role $role -ErrorAction SilentlyContinue
+                        if ($destinationRole) {
+                            Write-Log -Message "Adding login $loginName to role $role on $DestinationInstance." -Level "INFO"
+                            try {
+                                Add-DbaRoleMember -SqlInstance $DestinationInstance -SqlCredential $Credential -Role $role -Member $loginName -EnableException
+                                Write-Log -Message "Successfully added $loginName to role $role." -Level "SUCCESS"
+                            }
+                            catch {
+                                Write-Log -Message "Failed to add $loginName to role $($role): $_" -Level "ERROR"
+                            }
+                        }
+                        else {
+                            Write-Log -Message "Role $role does not exist on $DestinationInstance. Skipping for login $loginName." -Level "WARNING"
+                        }
+                    }
+                }
+                else {
+                    Write-Log -Message "Login $loginName does not exist on $DestinationInstance. Skipping role assignment." -Level "WARNING"
+                }
+            }
+            else {
+                Write-Log -Message "Login $loginName has no specific roles on $SourceInstance." -Level "INFO"
+            }
+        }
+    }
+    catch {
+        Write-Log -Message "An error occurred while assigning roles to logins: $_" -Level "ERROR"
+    }
+}
+
 # Main script execution
 EnsureAdminPrivileges
 
@@ -476,6 +541,7 @@ if ($primaryInstances.Count -eq 0) {
         Migrate-Databases -SourceInstance $SourceInstance -DestinationInstance $PrimaryInstanceName -Databases $Databases -NetworkBackupDir $NetworkBackupDir -LocalBackupDir $LocalBackupDir -Credential $myCredential
         Update-DatabaseSettings -Instance $PrimaryInstanceName -Databases $Databases -Credential $myCredential
         Migrate-Logins -SourceInstance $SourceInstance -DestinationInstance $PrimaryInstanceName -LoginType $LoginType -ExcludedLogins $ExcludedLogins -Credential $myCredential
+        Add-LoginsToRoles -SourceInstance $SourceInstance -DestinationInstance $PrimaryInstanceName -Credential $myCredential -ExcludedLogins $ExcludedLogins
     }
 }
 
