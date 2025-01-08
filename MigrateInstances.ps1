@@ -221,11 +221,14 @@ function Migrate-Databases {
                     } else {
                         try {
                             Write-Log -Message "Starting restore of '$Database' from '$LocalBackupDir'." -Level "INFO"
-                            Restore-DbaDatabase -SqlInstance $DestinationInstance -Path $backupFile -DatabaseName $Database -SqlCredential $Credential -ErrorAction Stop
-                            if (Get-DbaDatabase -SqlInstance $DestinationInstance -Database $Database) {
+                            $restoreResult = Restore-DbaDatabase -SqlInstance $DestinationInstance -Path $backupFile -DatabaseName $Database -SqlCredential $Credential -ErrorAction Stop -EnableException
+                            $null = $restoreResult  # This line ensures the output is not shown but the result is still accessible
+
+                            # Check the RestoreComplete property
+                            if ($restoreResult.RestoreComplete) {
                                 Write-Log -Message "Successfully restored database '$Database' from local backup. Completed migration for ($CompletedCount of $DatabasesCount) databases." -Level "SUCCESS"
                             } else {
-                                Write-Log -Message "Database '$Database' was not found after restore attempt." -Level "WARNING"
+                                Write-Log -Message "Restore of database '$Database' did not complete successfully." -Level "ERROR"
                             }
                         }
                         catch [Microsoft.SqlServer.Management.Smo.FailedOperationException] {
@@ -265,8 +268,13 @@ function Migrate-Databases {
             } else {
                 try {
                     Write-Log -Message "Starting migration of '$Database'." -Level "INFO"
-                    Copy-DbaDatabase -Source $SourceInstance -Destination $DestinationInstance -Database $Database -BackupRestore -SharedPath $NetworkBackupDir -SourceSqlCredential $Credential -DestinationSqlCredential $Credential
+                    $migrationResult = Copy-DbaDatabase -Source $SourceInstance -Destination $DestinationInstance -Database $Database -BackupRestore -SharedPath $NetworkBackupDir -SourceSqlCredential $Credential -DestinationSqlCredential $Credential -EnableException -WarningAction SilentlyContinue -ErrorAction Stop
                     Write-Log -Message "Successfully migrated database '$Database'. Completed migration for ($CompletedCount of $DatabasesCount) databases." -Level "SUCCESS"
+                
+                    # Here, we assume success because no exception was thrown
+                    if (-not $migrationResult) {
+                        Write-Log -Message "Database '$Database' migration completed but no result was returned." -Level "WARNING"
+                    }
                 }
                 catch {
                     Write-Log -Message "Failed to migrate '$Database': $_" -Level "ERROR"
@@ -291,12 +299,12 @@ function Update-DatabaseSettings {
     $DatabasesCount = $Databases.Count
     Write-Log -Message "Starting database settings update process." -Level "INFO"
 
-    $queryPageVerify = "ALTER DATABASE [$Database] SET PAGE_VERIFY CHECKSUM;"
-    $queryTargetRecovery = "ALTER DATABASE [$Database] SET TARGET_RECOVERY_TIME = 60 SECONDS;"
-
-    foreach ($Database in $Databases) {  # Here's where you need to add the opening curly brace
+    foreach ($Database in $Databases) {
         Write-Log -Message "Starting settings updates for '$Database'. Completed updates for ($CompletedCount of $DatabasesCount) databases." -Level "INFO"
         $CompletedCount++
+
+        $queryPageVerify = "ALTER DATABASE [$Database] SET PAGE_VERIFY CHECKSUM;"
+        $queryTargetRecovery = "ALTER DATABASE [$Database] SET TARGET_RECOVERY_TIME = 60 SECONDS;"
 
         try {
             Write-Log -Message "Setting database state to Restricted User mode: $Database" -Level "INFO"
