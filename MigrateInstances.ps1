@@ -412,7 +412,7 @@ function Migrate-Logins {
         $migratedLogins = $Logins | ForEach-Object {
             $loginName = $_.Name
             # Check if the login already exists on the destination
-            $existingLogin = Get-DbaLogin -SqlInstance $DestinationInstance -SqlCredential $Credential -Name $loginName -ErrorAction SilentlyContinue
+            $existingLogin = Get-DbaLogin -SqlInstance $DestinationInstance -SqlCredential $Credential -Login $loginName -ErrorAction SilentlyContinue
 
             if ($existingLogin) {
                 Write-Log -Message "Login '$loginName' already exists on $DestinationInstance. Skipping creation." -Level "WARNING"
