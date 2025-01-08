@@ -208,7 +208,7 @@ function Migrate-Databases {
         }
 
         foreach ($Database in $Databases) {
-            Write-Log -Message "Starting manual restore of '$Database'." -Level "INFO"
+            Write-Log -Message "Starting restore of $($Database) from $($LocalBackupDir)." -Level "INFO"
             $CompletedCount++
 
             try {
@@ -216,7 +216,11 @@ function Migrate-Databases {
                 if (Test-Path -Path $backupFile) {
                     try {
                         Restore-DbaDatabase -SqlInstance $DestinationInstance -Path $backupFile -DatabaseName $Database -SqlCredential $Credential -ErrorAction Stop
-                        Write-Log -Message "Successfully restored database '$Database' from local backup. Completed migration for ($CompletedCount of $DatabasesCount) databases." -Level "SUCCESS"
+                        if (Get-DbaDatabase -SqlInstance $DestinationInstance -Database $Database) {
+                            Write-Log -Message "Successfully restored database '$Database' from local backup. Completed migration for ($CompletedCount of $DatabasesCount) databases." -Level "SUCCESS"
+                        } else {
+                            Write-Log -Message "Database '$Database' was not found after restore attempt." -Level "WARNING"
+                        }
                     }
                     catch [Microsoft.SqlServer.Management.Smo.FailedOperationException] {
                         if ($_.Exception.Message -like "*already exists*") {
@@ -327,7 +331,7 @@ foreach ($Target in $TargetInstances) {
     }
 }
 
-# Migrate and Update databases on all primary instances
+# Migrate and update databases on all primary instances
 $primaryInstances = $TargetInstances | Where-Object { 
     $_.Roles -contains 'AGPrimary' -or 
     $_.Roles -contains 'LogShippingPrimary' -or 
