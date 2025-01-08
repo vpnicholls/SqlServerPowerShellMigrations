@@ -5,7 +5,8 @@
     .DESCRIPTION
     This script:
     - migrates various instance-level objects
-    - Migrates various server objects
+    - migrates logins and adds them to the applicable "server-level roles"
+    - migrates various other server objects
     - migrates specified databases from a source SQL Server instance to target instance(s)
     - updates various database settings
     It uses dbatools for SQL operations, includes logging, credential validation, and ensures administrative privileges are present for execution.
@@ -62,10 +63,10 @@
         ScriptEventLogPath = "$env:userprofile\Documents"
         SourceInstance = "SQL01"
         TargetInstances = @(
-            @{Host="SQL02"; Instance="MSSQLSERVER"; Roles=@("AGPrimary", "ReplicationPublisher")},
-            @{Host="SQL03"; Instance="MSSQLSERVER"; Roles=@("AGSecondary")},
-            @{Host="SQL04"; Instance="MSSQLSERVER"; Roles=@("ReplicationDistributor", "ReplicationSubscriber")}
-            @{Host="SQL05"; Instance="MSSQLSERVER"; Roles=@("Standalone")}
+            @{HostServer="SQL02"; Instance="MSSQLSERVER"; Roles=@("AGPrimary", "ReplicationPublisher")},
+            @{HostServer="SQL03"; Instance="MSSQLSERVER"; Roles=@("AGSecondary")},
+            @{HostServer="SQL04"; Instance="MSSQLSERVER"; Roles=@("ReplicationDistributor", "ReplicationSubscriber")}
+            @{HostServer="SQL05"; Instance="MSSQLSERVER"; Roles=@("Standalone")}
         )
         Environment = "QA"
         NetworkBackupDir = "\\backup\dir"
@@ -91,7 +92,7 @@
 
 #requires -module dbatools
 
-Set-StrictMode -Version Latest
+# Set-StrictMode -Version Latest
 
 param (
     [Parameter(Mandatory=$true)][PSCredential]$myCredential,
@@ -102,10 +103,10 @@ param (
     [Parameter(Mandatory=$false)][string]$NetworkBackupDir,
     [Parameter(Mandatory=$false)][string]$LocalBackupDir,
     [Parameter(Mandatory=$true)][string[]]$Databases,
-    [Parameter(Mandatory=$false)][string]$AgentCredentials,
+    [Parameter(Mandatory=$false)][string[]]$AgentCredentials,
     [Parameter(Mandatory=$false)][string[]]$ExcludedLogins,
-    [Parameter(Mandatory=$false)][string]$ExcludedOperators,
-    [Parameter(Mandatory=$false)][string]$Categories
+    [Parameter(Mandatory=$false)][string[]]$ExcludedOperators,
+    [Parameter(Mandatory=$false)][string[]]$Categories
 )
 
 # Generate log file name with datetime stamp
@@ -138,22 +139,43 @@ function EnsureAdminPrivileges {
     }
 }
 
-# Function to validate credentials
-function Test-Credential {
+# Function to test connectivity using Connect-DbaInstance
+function Test-Connectivity {
     param (
-        [PSCredential]$Credential,
-        [string]$Instance
+        [string]$ServerHost,
+        [string]$InstanceName,
+        [PSCredential]$Credential
     )
     try {
-        $testConnection = Test-DbaConnection -SqlInstance $Instance -SqlCredential $Credential
-        if (-not $testConnection.Connected) {
-            throw "Connection to $Instance failed."
+        Write-Verbose "Testing connectivity to $ServerHost..."
+        
+        # Construct the SqlInstance string
+        $SqlInstance = if ($InstanceName -eq "MSSQLSERVER") { $ServerHost } else { "$ServerHost\$InstanceName" }
+        
+        # Try to connect
+        $connection = Connect-DbaInstance -SqlInstance $SqlInstance -SqlCredential $Credential -ErrorAction Stop
+        
+        # If connection is successful, return true
+        if ($connection) {
+            Write-Verbose "Successfully connected to $SqlInstance."
+            return $true
         }
-    } catch {
-        Write-Log -Message "Credential validation failed: $_" -Level "ERROR"
+        else {
+            Write-Log -Message "Failed to connect to $SqlInstance." -Level "ERROR"
+            return $false
+        }
+    }
+    catch {
+        # Log any errors encountered
+        Write-Log -Message "Error connecting to $($SqlInstance): $_" -Level "ERROR"
         return $false
     }
-    return $true
+    finally {
+        # Ensure any open connections are closed
+        if ($connection) {
+            Disconnect-DbaInstance -InputObject $connection
+        }
+    }
 }
 
 # Function to migrate user databases
@@ -297,23 +319,34 @@ function Update-DatabaseSettings {
 # Main script execution
 EnsureAdminPrivileges
 
-# Validate credentials for all instances
+# Validate connectivity and credentials for all instances
 foreach ($Target in $TargetInstances) {
-    $Instance = "$($Target.Host)\$($Target.Instance)"
-    if (-not (Test-Credential -Credential $myCredential -Instance $Instance)) {
-        Write-Log -Message "Script terminated due to invalid credentials for $Instance." -Level "FATAL"
+    if (-not (Test-Connectivity -ServerHost $Target.HostServer -InstanceName $Target.Instance -Credential $myCredential)) {
+        Write-Log -Message "Script terminated due to connectivity or credential issues for $($Target.HostServer)\$($Target.Instance)." -Level "FATAL"
         exit
     }
 }
 
 # Migrate and Update databases on all primary instances
-$primaryInstances = $TargetInstances | Where-Object { $_.Roles -in @("AGPrimary", "LogShippingPrimary", "Standalone") }
+$primaryInstances = $TargetInstances | Where-Object { 
+    $_.Roles -contains 'AGPrimary' -or 
+    $_.Roles -contains 'LogShippingPrimary' -or 
+    $_.Roles -contains 'Standalone'
+}
 
-foreach ($primaryInstance in $primaryInstances) {
-    $PrimaryInstanceName = "$($primaryInstance.Host)\$($primaryInstance.Instance)"
-    Write-Log -Message "Starting database migration to $PrimaryInstanceName." -Level "INFO"
-    Migrate-Databases -SourceInstance $SourceInstance -DestinationInstance $PrimaryInstanceName -Databases $Databases -NetworkBackupDir $NetworkBackupDir -LocalBackupDir $LocalBackupDir -Credential $myCredential
-    Update-DatabaseSettings -Instance $PrimaryInstanceName -Databases $Databases -Credential $myCredential
+if ($primaryInstances.Count -eq 0) {
+    Write-Log -Message "No primary instances (AGPrimary, LogShippingPrimary, or Standalone) found among target instances." -Level "ERROR"
+} else {
+    foreach ($primaryInstance in $primaryInstances) {
+        $PrimaryInstanceName = if ($primaryInstance.Instance -eq "MSSQLSERVER") {
+            $primaryInstance.HostServer
+        } else {
+            "$($primaryInstance.HostServer)\$($primaryInstance.Instance)"
+        }
+        Write-Log -Message "Starting database migration to $PrimaryInstanceName." -Level "INFO"
+        Migrate-Databases -SourceInstance $SourceInstance -DestinationInstance $PrimaryInstanceName -Databases $Databases -NetworkBackupDir $NetworkBackupDir -LocalBackupDir $LocalBackupDir -Credential $myCredential
+        Update-DatabaseSettings -Instance $PrimaryInstanceName -Databases $Databases -Credential $myCredential
+    }
 }
 
 if ($primaryInstances.Count -eq 0) {
