@@ -11,7 +11,16 @@
     - migrates Agent operators (to be developed)
     - migrates Database Mail (to be developed)
     - migrates linked servers (to be developed)
-    - migrates various other server objects
+    - migrates SQL Agent jobs (to be developed)
+    - migrates SQL Agent alerts(to be developed)
+    - migrates sys.configurations (to be developed)
+    - migrates server triggers (to be developed)
+    - migrates endpoints (to be developed)
+    - migrates Extended Events sessions (to be developed)
+    - migrates certificates, asymmetric keys, and symmetric keys for encryption
+    - migrates Server Audits and Audit Specifications (to be developed)
+    - migrates Resource Governor configirations (to be developed)
+
     - migrates specified databases from a source SQL Server instance to target instance(s)
     - updates various database settings
     It uses dbatools for SQL operations, includes logging, credential validation, and ensures administrative privileges are present for execution.
