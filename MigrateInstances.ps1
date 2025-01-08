@@ -294,39 +294,80 @@ function Update-DatabaseSettings {
     $queryPageVerify = "ALTER DATABASE [$Database] SET PAGE_VERIFY CHECKSUM;"
     $queryTargetRecovery = "ALTER DATABASE [$Database] SET TARGET_RECOVERY_TIME = 60 SECONDS;"
 
-    foreach ($Database in $Databases) {
+    foreach ($Database in $Databases) {  # Here's where you need to add the opening curly brace
         Write-Log -Message "Starting settings updates for '$Database'. Completed updates for ($CompletedCount of $DatabasesCount) databases." -Level "INFO"
         $CompletedCount++
 
         try {
-            Write-Log -Message "Setting database state to restricted user: $Database" -Level "INFO"
-            Set-DbaDbState -SqlInstance $Instance -Database $Database -SqlCredential $Credential -RestrictedUser -Force
+            Write-Log -Message "Setting database state to Restricted User mode: $Database" -Level "INFO"
+            try {
+                Set-DbaDbState -SqlInstance $Instance -Database $Database -SqlCredential $Credential -RestrictedUser -Force -EnableException | Out-Null
+            }
+            catch {
+                Write-Log -Message "Failed to set database state for '$Database' to Restricted User mode: $_" -Level "ERROR"
+            }
 
             Write-Log -Message "Setting database owner: $Database" -Level "INFO"
-            Set-DbaDbOwner -SqlInstance $Instance -Database $Database -SqlCredential $Credential
+            try {
+                Set-DbaDbOwner -SqlInstance $Instance -Database $Database -SqlCredential $Credential -EnableException | Out-Null
+            }
+            catch {
+                Write-Log -Message "Failed to set database owner for '$Database': $_" -Level "ERROR"
+            }
 
-            Write-Log -Message "Setting database comnpatibility level: $Database" -Level "INFO"
-            Set-DbaDbCompatibility -SqlInstance $Instance -SqlCredential $Credential
-            
+            Write-Log -Message "Setting database compatibility level: $Database" -Level "INFO"
+            try {
+                Set-DbaDbCompatibility -SqlInstance $Instance -SqlCredential $Credential -Database $Database -EnableException | Out-Null
+            }
+            catch {
+                Write-Log -Message "Failed to set database compatibility level for '$Database': $_" -Level "ERROR"
+            }
+
             Write-Log -Message "Enabling and setting query store options: $Database" -Level "INFO"
-            Set-DbaDbQueryStoreOption -SqlInstance $Instance -SqlCredential $Credential -State ReadWrite -MaxSize 128
-            
+            try {
+                Set-DbaDbQueryStoreOption -SqlInstance $Instance -SqlCredential $Credential -Database $Database -State ReadWrite -MaxSize 128 -EnableException | Out-Null
+            }
+            catch {
+                Write-Log -Message "Failed to set query store options for '$Database': $_" -Level "ERROR"
+            }
+
             Write-Log -Message "Setting database page verify option: $Database" -Level "INFO"
-            Invoke-DbaQuery -SqlInstance $Instance -Database $Database -SqlCredential $Credential -Query $queryPageVerify
-            
+            try {
+                Invoke-DbaQuery -SqlInstance $Instance -Database $Database -SqlCredential $Credential -Query $queryPageVerify -EnableException | Out-Null
+            }
+            catch {
+                Write-Log -Message "Failed to set page verify option for '$Database': $_" -Level "ERROR"
+            }
+
             Write-Log -Message "Setting database target recovery time: $Database" -Level "INFO"
-            Invoke-DbaQuery -SqlInstance $Instance -Database $Database -SqlCredential $Credential -Query $queryTargetRecovery
-            
-            Write-Log -Message "Reverting database state to multi user: $Database" -Level "INFO"
-            Set-DbaDbState -SqlInstance $Instance -Database $Database -SqlCredential $Credential -MultiUser
+            try {
+                Invoke-DbaQuery -SqlInstance $Instance -Database $Database -SqlCredential $Credential -Query $queryTargetRecovery -EnableException | Out-Null
+            }
+            catch {
+                Write-Log -Message "Failed to set target recovery time for '$Database': $_" -Level "ERROR"
+            }
+
+            Write-Log -Message "Reverting database state to Multi User mode: $Database" -Level "INFO"
+            try {
+                Set-DbaDbState -SqlInstance $Instance -Database $Database -SqlCredential $Credential -MultiUser -EnableException | Out-Null
+            }
+            catch {
+                Write-Log -Message "Failed to revert database state to Multi User for '$Database': $_" -Level "ERROR"
+            }
 
             Write-Log -Message "Successfully updated settings for database '$Database'." -Level "SUCCESS"
         }
         catch {
-            Write-Log -Message "Failed to update settings for '$Database': $_" -Level "ERROR"
+            Write-Log -Message "A general error occurred while updating settings for '$Database': $_" -Level "ERROR"
         }
         finally {
-            Set-DbaDbState -SqlInstance $Instance -Database $Database -SqlCredential $Credential -MultiUser
+            Write-Log -Message "Ensuring database state is set to Multi User for '$Database'" -Level "INFO"
+            try {
+                Set-DbaDbState -SqlInstance $Instance -Database $Database -SqlCredential $Credential -MultiUser -EnableException | Out-Null
+            }
+            catch {
+                Write-Log -Message "Failed to ensure database state is Multi User for '$Database': $_" -Level "ERROR"
+            }
         }
     }
 }
