@@ -410,13 +410,31 @@ function Migrate-Logins {
 
         # Migrate the logins to the destination instance
         $migratedLogins = $Logins | ForEach-Object {
-            Copy-DbaLogin -Source $SourceInstance -Destination $DestinationInstance -Login $_.Name -SourceSqlCredential $Credential -DestinationSqlCredential $Credential -EnableException -WarningAction SilentlyContinue
+            $loginName = $_.Name
+            # Check if the login already exists on the destination
+            $existingLogin = Get-DbaLogin -SqlInstance $DestinationInstance -SqlCredential $Credential -Name $loginName -ErrorAction SilentlyContinue
+
+            if ($existingLogin) {
+                Write-Log -Message "Login '$loginName' already exists on $DestinationInstance. Skipping creation." -Level "WARNING"
+                # Return an object to mimic the structure of Copy-DbaLogin's output for consistency
+                [PSCustomObject]@{
+                    Name = $loginName
+                    Status = 'Skipped'
+                    Error = 'Login already exists'
+                }
+            } else {
+                # If login does not exist, proceed with migration
+                Copy-DbaLogin -Source $SourceInstance -Destination $DestinationInstance -Login $loginName -SourceSqlCredential $Credential -DestinationSqlCredential $Credential -EnableException -WarningAction SilentlyContinue -ErrorAction Stop
+            }
         }
 
         # Log the results
         $migratedLogins | ForEach-Object {
             if ($_.Status -eq 'Successful') {
                 Write-Log -Message "Successfully migrated login: $($_.Name)" -Level "SUCCESS"
+            } elseif ($_.Status -eq 'Skipped') {
+                # Already logged as a warning above, but included here for completeness in logging
+                Write-Log -Message "Login migration skipped: $($_.Name) - Reason: $($_.Error)" -Level "INFO"
             } else {
                 Write-Log -Message "Failed to migrate login: $($_.Name) - Error: $($_.Error)" -Level "ERROR"
             }
@@ -457,7 +475,7 @@ if ($primaryInstances.Count -eq 0) {
         Write-Log -Message "Starting database migration to $PrimaryInstanceName." -Level "INFO"
         Migrate-Databases -SourceInstance $SourceInstance -DestinationInstance $PrimaryInstanceName -Databases $Databases -NetworkBackupDir $NetworkBackupDir -LocalBackupDir $LocalBackupDir -Credential $myCredential
         Update-DatabaseSettings -Instance $PrimaryInstanceName -Databases $Databases -Credential $myCredential
-        Migrate-Logins -SourceInstance $SourceInstance -DestinationInstance $PrimaryInstanceName -ExcludedLogins $ExcludedLogins -Credential $myCredential
+        Migrate-Logins -SourceInstance $SourceInstance -DestinationInstance $PrimaryInstanceName -LoginType $LoginType -ExcludedLogins $ExcludedLogins -Credential $myCredential
     }
 }
 
