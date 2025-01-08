@@ -6,6 +6,11 @@
     This script:
     - migrates various instance-level objects
     - migrates logins and adds them to the applicable "server-level roles"
+    - migrates Agent credentials
+    - migrates Agent proxies (to be developed)
+    - migrates Agent operators (to be developed)
+    - migrates Database Mail (to be developed)
+    - migrates linked servers (to be developed)
     - migrates various other server objects
     - migrates specified databases from a source SQL Server instance to target instance(s)
     - updates various database settings
@@ -510,6 +515,55 @@ function Add-LoginsToRoles {
     }
 }
 
+# Function to migrate credentials
+function Migrate-Credentials {
+    param (
+        [string]$SourceInstance,
+        [array]$TargetInstances,
+        [string]$AgentCredentials,
+        [PSCredential]$Credential
+    )
+    try {
+        # Retrieve the credential from the source instance
+        $sourceCredential = Get-DbaCredential -SqlInstance $SourceInstance -Name $AgentCredentials -SqlCredential $Credential -ErrorAction Stop
+
+        if ($sourceCredential) {
+            Write-Log -Message "Found credential '$AgentCredentials' on source instance $SourceInstance. Proceeding with migration." -Level "INFO"
+
+            # Loop through each target instance
+            foreach ($Target in $TargetInstances) {
+                $TargetInstanceName = if ($Target.Instance -eq "MSSQLSERVER") { $Target.HostServer } else { "$($Target.HostServer)\$($Target.Instance)" }
+
+                try {
+                    # Check if the credential already exists on the target
+                    $existingCredential = Get-DbaCredential -SqlInstance $TargetInstanceName -Name $AgentCredentials -SqlCredential $Credential -ErrorAction SilentlyContinue
+
+                    if ($existingCredential) {
+                        Write-Log -Message "Credential '$AgentCredentials' already exists on $TargetInstanceName. Skipping creation." -Level "WARNING"
+                    } else {
+                        # Migrate the credential
+                        $result = Copy-DbaCredential -Source $SourceInstance -Destination $TargetInstanceName -Name $AgentCredentials -SourceSqlCredential $Credential -DestinationSqlCredential $Credential -EnableException -WarningAction SilentlyContinue
+
+                        if ($result.Status -eq 'Successful') {
+                            Write-Log -Message "Successfully migrated credential '$AgentCredentials' to $TargetInstanceName." -Level "SUCCESS"
+                        } else {
+                            Write-Log -Message "Failed to migrate credential '$AgentCredentials' to $($TargetInstanceName): $($result.Error)" -Level "ERROR"
+                        }
+                    }
+                }
+                catch {
+                    Write-Log -Message "An error occurred while migrating credential '$AgentCredentials' to $($TargetInstanceName): $_" -Level "ERROR"
+                }
+            }
+        } else {
+            Write-Log -Message "Credential '$AgentCredentials' not found on source instance $SourceInstance. No migration performed." -Level "WARNING"
+        }
+    }
+    catch {
+        Write-Log -Message "An error occurred while retrieving credential from source: $_" -Level "ERROR"
+    }
+}
+
 # Main script execution
 EnsureAdminPrivileges
 
@@ -542,6 +596,7 @@ if ($primaryInstances.Count -eq 0) {
         Update-DatabaseSettings -Instance $PrimaryInstanceName -Databases $Databases -Credential $myCredential
         Migrate-Logins -SourceInstance $SourceInstance -DestinationInstance $PrimaryInstanceName -LoginType $LoginType -ExcludedLogins $ExcludedLogins -Credential $myCredential
         Add-LoginsToRoles -SourceInstance $SourceInstance -DestinationInstance $PrimaryInstanceName -Credential $myCredential -ExcludedLogins $ExcludedLogins
+        Migrate-Credentials -SourceInstance $SourceInstance -TargetInstances $TargetInstances -AgentCredentials $AgentCredentials -Credential $myCredential
     }
 }
 
