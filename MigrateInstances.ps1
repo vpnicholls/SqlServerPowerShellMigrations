@@ -51,6 +51,9 @@
     .PARAMETER ExcludedLogins
     An array of login names to exclude from migration. This is reserved for future development.
 
+    .PARAMETER LoginType
+    An optional parameter if you are migrating either SQL logins or Windows logins. Not required if you are migrating both types of logins.
+
     .PARAMETER ExcludedOperators
     Operator names to exclude from migration. This is reserved for future development.
 
@@ -105,6 +108,7 @@ param (
     [Parameter(Mandatory=$true)][string[]]$Databases,
     [Parameter(Mandatory=$false)][string[]]$AgentCredentials,
     [Parameter(Mandatory=$false)][string[]]$ExcludedLogins,
+    [Parameter(Mandatory=$false)][ValidateSet("SQL", "Windows")][string]$LoginType,
     [Parameter(Mandatory=$false)][string[]]$ExcludedOperators,
     [Parameter(Mandatory=$false)][string[]]$Categories
 )
@@ -380,6 +384,49 @@ function Update-DatabaseSettings {
     }
 }
 
+# Define the function to migrate required logins
+function Migrate-Logins {
+    param (
+        [string]$SourceInstance,
+        [string]$DestinationInstance,
+        [string]$LoginType = "",
+        [string[]]$ExcludedLogins,
+        [PSCredential]$Credential
+    )
+    try {
+        # Determine which logins to migrate based on $LoginType
+        if ($LoginType -eq "SQL") {
+            $Logins = Get-DbaLogin -SqlInstance $SourceInstance -SqlCredential $Credential -Type SQL -ExcludeLogin $ExcludedLogins
+        }
+        elseif ($LoginType -eq "Windows") {
+            $Logins = Get-DbaLogin -SqlInstance $SourceInstance -SqlCredential $Credential -Type Windows -ExcludeLogin $ExcludedLogins
+        }
+        else {
+            # If no specific LoginType is provided or if it's not recognized, migrate both SQL and Windows logins
+            $Logins = Get-DbaLogin -SqlInstance $SourceInstance -SqlCredential $Credential -ExcludeLogin $ExcludedLogins
+        }
+
+        Write-Log -Message "Migrating $($Logins.Count) logins from $SourceInstance to $DestinationInstance." -Level "INFO"
+
+        # Migrate the logins to the destination instance
+        $migratedLogins = $Logins | ForEach-Object {
+            Copy-DbaLogin -Source $SourceInstance -Destination $DestinationInstance -Login $_.Name -SourceSqlCredential $Credential -DestinationSqlCredential $Credential -EnableException -WarningAction SilentlyContinue
+        }
+
+        # Log the results
+        $migratedLogins | ForEach-Object {
+            if ($_.Status -eq 'Successful') {
+                Write-Log -Message "Successfully migrated login: $($_.Name)" -Level "SUCCESS"
+            } else {
+                Write-Log -Message "Failed to migrate login: $($_.Name) - Error: $($_.Error)" -Level "ERROR"
+            }
+        }
+    }
+    catch {
+        Write-Log -Message "An error occurred while migrating logins: $_" -Level "ERROR"
+    }
+}
+
 # Main script execution
 EnsureAdminPrivileges
 
@@ -410,6 +457,7 @@ if ($primaryInstances.Count -eq 0) {
         Write-Log -Message "Starting database migration to $PrimaryInstanceName." -Level "INFO"
         Migrate-Databases -SourceInstance $SourceInstance -DestinationInstance $PrimaryInstanceName -Databases $Databases -NetworkBackupDir $NetworkBackupDir -LocalBackupDir $LocalBackupDir -Credential $myCredential
         Update-DatabaseSettings -Instance $PrimaryInstanceName -Databases $Databases -Credential $myCredential
+        Migrate-Logins -SourceInstance $SourceInstance -DestinationInstance $PrimaryInstanceName -ExcludedLogins $ExcludedLogins -Credential $myCredential
     }
 }
 
