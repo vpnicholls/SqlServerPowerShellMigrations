@@ -208,33 +208,37 @@ function Migrate-Databases {
         }
 
         foreach ($Database in $Databases) {
-            Write-Log -Message "Starting restore of $($Database) from $($LocalBackupDir)." -Level "INFO"
+            Write-Log -Message "Checking if database '$Database' exists before restore." -Level "INFO"
             $CompletedCount++
 
             try {
                 $backupFile = Join-Path -Path $LocalBackupDir -ChildPath "$Database.bak"
                 if (Test-Path -Path $backupFile) {
-                    try {
-                        Restore-DbaDatabase -SqlInstance $DestinationInstance -Path $backupFile -DatabaseName $Database -SqlCredential $Credential -ErrorAction Stop
-                        if (Get-DbaDatabase -SqlInstance $DestinationInstance -Database $Database) {
-                            Write-Log -Message "Successfully restored database '$Database' from local backup. Completed migration for ($CompletedCount of $DatabasesCount) databases." -Level "SUCCESS"
-                        } else {
-                            Write-Log -Message "Database '$Database' was not found after restore attempt." -Level "WARNING"
+                    # Check if the database already exists
+                    $existingDatabase = Get-DbaDatabase -SqlInstance $DestinationInstance -Database $Database -ErrorAction SilentlyContinue
+                    if ($existingDatabase) {
+                        Write-Log -Message "Database '$Database' already exists on $DestinationInstance. Skipping restore." -Level "WARNING"
+                    } else {
+                        try {
+                            Write-Log -Message "Starting restore of '$Database' from '$LocalBackupDir'." -Level "INFO"
+                            Restore-DbaDatabase -SqlInstance $DestinationInstance -Path $backupFile -DatabaseName $Database -SqlCredential $Credential -ErrorAction Stop
+                            if (Get-DbaDatabase -SqlInstance $DestinationInstance -Database $Database) {
+                                Write-Log -Message "Successfully restored database '$Database' from local backup. Completed migration for ($CompletedCount of $DatabasesCount) databases." -Level "SUCCESS"
+                            } else {
+                                Write-Log -Message "Database '$Database' was not found after restore attempt." -Level "WARNING"
+                            }
                         }
-                    }
-                    catch [Microsoft.SqlServer.Management.Smo.FailedOperationException] {
-                        if ($_.Exception.Message -like "*already exists*") {
-                            Write-Log -Message "Database '$Database' already exists. Skipping restore." -Level "WARNING"
+                        catch [Microsoft.SqlServer.Management.Smo.FailedOperationException] {
+                            if ($_.Exception.Message -like "*access denied*") {
+                                Write-Log -Message "Insufficient permissions to restore database '$Database'. Skipping." -Level "WARNING"
+                            }
+                            else {
+                                Write-Log -Message "Failed to restore '$Database': $_" -Level "ERROR"
+                            }
                         }
-                        elseif ($_.Exception.Message -like "*access denied*") {
-                            Write-Log -Message "Insufficient permissions to restore database '$Database'. Skipping." -Level "WARNING"
+                        catch {
+                            Write-Log -Message "Unexpected error restoring '$Database': $_" -Level "ERROR"
                         }
-                        else {
-                            Write-Log -Message "Failed to restore '$Database': $_" -Level "ERROR"
-                        }
-                    }
-                    catch {
-                        Write-Log -Message "Unexpected error restoring '$Database': $_" -Level "ERROR"
                     }
                 } else {
                     Write-Log -Message "Backup file for '$Database' not found in $LocalBackupDir." -Level "ERROR"
@@ -251,15 +255,22 @@ function Migrate-Databases {
         }
         Write-Log -Message "Using network backup directory for database migration." -Level "INFO"
         foreach ($Database in $Databases) {
-            Write-Log -Message "Starting migration of '$Database'." -Level "INFO"
+            Write-Log -Message "Checking if database '$Database' exists before migration." -Level "INFO"
             $CompletedCount++
 
-            try {
-                Copy-DbaDatabase -Source $SourceInstance -Destination $DestinationInstance -Database $Database -BackupRestore -SharedPath $NetworkBackupDir -SourceSqlCredential $Credential -DestinationSqlCredential $Credential
-                Write-Log -Message "Successfully migrated database '$Database'. Completed migration for ($CompletedCount of $DatabasesCount) databases." -Level "SUCCESS"
-            }
-            catch {
-                Write-Log -Message "Failed to migrate '$Database': $_" -Level "ERROR"
+            # Since Copy-DbaDatabase handles existence check internally, we'll only log the intent
+            $existingDatabase = Get-DbaDatabase -SqlInstance $DestinationInstance -Database $Database -ErrorAction SilentlyContinue
+            if ($existingDatabase) {
+                Write-Log -Message "Database '$Database' already exists on $DestinationInstance. Skipping migration." -Level "WARNING"
+            } else {
+                try {
+                    Write-Log -Message "Starting migration of '$Database'." -Level "INFO"
+                    Copy-DbaDatabase -Source $SourceInstance -Destination $DestinationInstance -Database $Database -BackupRestore -SharedPath $NetworkBackupDir -SourceSqlCredential $Credential -DestinationSqlCredential $Credential
+                    Write-Log -Message "Successfully migrated database '$Database'. Completed migration for ($CompletedCount of $DatabasesCount) databases." -Level "SUCCESS"
+                }
+                catch {
+                    Write-Log -Message "Failed to migrate '$Database': $_" -Level "ERROR"
+                }
             }
         }
     }
