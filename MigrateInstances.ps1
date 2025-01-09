@@ -577,7 +577,7 @@ function Add-LoginsToRoles {
                     }
                 }
                 catch {
-                    Write-Log -Message "Failed to enumerate roles for login $loginName: $_" -Level "ERROR"
+                    Write-Log -Message "Failed to enumerate roles for login $($loginName): $_" -Level "ERROR"
                 }
             }
             else {
