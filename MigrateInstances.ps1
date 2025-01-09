@@ -734,17 +734,21 @@ function Migrate-DatabaseMail {
                     } else {
                         Write-Log -Message "Found Database Mail configurations on source instance $SourceInstance. Proceeding with migration to $TargetInstanceName." -Level "INFO"
                         # Migrate Database Mail to the target instance
-                        $migrationResult = Copy-DbaDbMail -Source $SourceInstance -Destination $TargetInstanceName -SourceSqlCredential $Credential -DestinationSqlCredential $Credential -EnableException | Out-Null
-
-                        if ($migrationResult) {
-                            Write-Log -Message "Successfully migrated Database Mail configurations to $TargetInstanceName." -Level "SUCCESS"
-                        } else {
-                            Write-Log -Message "Failed to migrate Database Mail configurations to $TargetInstanceName." -Level "ERROR"
+                        try {
+                            $migrationResult = Copy-DbaDbMail -Source $SourceInstance -Destination $TargetInstanceName -SourceSqlCredential $Credential -DestinationSqlCredential $Credential -EnableException
+                            if ($migrationResult) {
+                                Write-Log -Message "Successfully migrated Database Mail configurations to $TargetInstanceName." -Level "SUCCESS"
+                            } else {
+                                Write-Log -Message "Failed to migrate Database Mail configurations to $TargetInstanceName. Migration result: $migrationResult" -Level "ERROR"
+                            }
+                        }
+                        catch {
+                            Write-Log -Message "An error occurred while migrating Database Mail to $($TargetInstanceName): $_" -Level "ERROR"
                         }
                     }
                 }
                 catch {
-                    Write-Log -Message "An error occurred while migrating Database Mail to $($TargetInstanceName): $_" -Level "ERROR"
+                    Write-Log -Message "An error occurred while checking or migrating Database Mail to $($TargetInstanceName): $_" -Level "ERROR"
                 }
             }
         } else {
