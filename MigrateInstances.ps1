@@ -319,8 +319,8 @@ function Migrate-Databases {
     }
 
     # Summary Log
-    Write-Log -Message "$DatabasesCount databases were requested for migration." -Level "INFO"
-    Write-Log -Message "Backups could not be found for $missingBackups of the requested databases." -Level "INFO"
+    Write-Log -Message "There were $DatabasesCount requested to be migrated." -Level "INFO"
+    Write-Log -Message "There were $missingBackups databases where an associated backup could not be found." -Level "INFO"
     Write-Log -Message "There were $skippedDatabases databases skipped as they already exist on the target." -Level "INFO"
     Write-Log -Message "There were $failedRestores databases where a restore was attempted but failed." -Level "INFO"
     Write-Log -Message "There were $successfulRestores databases with successful restores." -Level "INFO"
@@ -659,9 +659,6 @@ function Migrate-DatabaseMail {
         $dbMailConfigs = Get-DbaDbMail -SqlInstance $SourceInstance -SqlCredential $Credential -EnableException
 
         if ($dbMailConfigs) {
-            Write-Log -Message "Found Database Mail configurations on source instance $SourceInstance. Proceeding with migration." -Level "INFO"
-
-            # Loop through each target instance
             foreach ($Target in $TargetInstances) {
                 $TargetInstanceName = if ($Target.Instance -eq "MSSQLSERVER") { $Target.HostServer } else { "$($Target.HostServer)\$($Target.Instance)" }
 
@@ -672,6 +669,7 @@ function Migrate-DatabaseMail {
                     if ($existingDbMail) {
                         Write-Log -Message "Database Mail is already configured on $TargetInstanceName. Skipping migration." -Level "WARNING"
                     } else {
+                        Write-Log -Message "Found Database Mail configurations on source instance $SourceInstance. Proceeding with migration to $TargetInstanceName." -Level "INFO"
                         # Migrate Database Mail to the target instance
                         $migrationResult = Copy-DbaDbMail -Source $SourceInstance -Destination $TargetInstanceName -SourceSqlCredential $Credential -DestinationSqlCredential $Credential -EnableException | Out-Null
 
