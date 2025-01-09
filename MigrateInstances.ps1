@@ -530,13 +530,13 @@ function Add-LoginsToRoles {
     try {
         Write-Log -Message "Starting role assignment for logins from $SourceInstance to $DestinationInstance." -Level "INFO"
 
-        # Counters for summary
-        $skippedRoles = 0
-        $failedRoles = 0
-        $successfulRoles = 0
+        $RoleStats = @{}
 
         # Retrieve logins from source instance, excluding specified logins
         $SourceLogins = Get-DbaLogin -SqlInstance $SourceInstance -SqlCredential $Credential -ExcludeLogin $ExcludedLogins
+
+        # Get role memberships from source
+        $roleMemberships = Get-DbaServerRoleMember -SqlInstance $SourceInstance -SqlCredential $Credential
 
         foreach ($login in $SourceLogins) {
             $loginName = $login.Name
@@ -547,28 +547,37 @@ function Add-LoginsToRoles {
 
             if ($destinationLogin) {
                 try {
-                    $sourceRoles = $login.EnumRoles() | Where-Object { $_ -ne 'public' } # Exclude public role as it's default
+                    $sourceRoles = $roleMemberships | Where-Object { $_.MemberName -eq $loginName } | Select-Object -ExpandProperty RoleName | Where-Object { $_ -ne 'public' }
 
                     if ($sourceRoles.Count -gt 0) {
                         Write-Log -Message "Login $loginName has roles on source: $([string]::Join(", ", $sourceRoles))" -Level "INFO"
                         
-                        # Attempt to add each role
                         foreach ($role in $sourceRoles) {
+                            if (-not $RoleStats.ContainsKey($role)) {
+                                $RoleStats[$role] = @{
+                                    Total = 0
+                                    Skipped = 0
+                                    Failed = 0
+                                    Successful = 0
+                                }
+                            }
+                            $RoleStats[$role].Total++
+
                             $destinationRole = Get-DbaRole -SqlInstance $DestinationInstance -SqlCredential $Credential -Role $role -ErrorAction SilentlyContinue
                             if ($destinationRole) {
                                 try {
                                     Add-DbaRoleMember -SqlInstance $DestinationInstance -SqlCredential $Credential -Role $role -Member $loginName -EnableException
                                     Write-Log -Message "Successfully added $loginName to role $role." -Level "SUCCESS"
-                                    $successfulRoles++
+                                    $RoleStats[$role].Successful++
                                 }
                                 catch {
                                     Write-Log -Message "Failed to add $loginName to role $($role): $_" -Level "ERROR"
-                                    $failedRoles++
+                                    $RoleStats[$role].Failed++
                                 }
                             }
                             else {
                                 Write-Log -Message "Role $role does not exist on $DestinationInstance. Skipping for login $loginName." -Level "WARNING"
-                                $skippedRoles++
+                                $RoleStats[$role].Skipped++
                             }
                         }
                     }
@@ -577,19 +586,22 @@ function Add-LoginsToRoles {
                     }
                 }
                 catch {
-                    Write-Log -Message "Failed to enumerate roles for login $($loginName): $_" -Level "ERROR"
+                    Write-Log -Message "Failed to query roles for login $($loginName): $_" -Level "ERROR"
                 }
             }
             else {
                 Write-Log -Message "Login $loginName does not exist on $DestinationInstance. Skipping role assignment." -Level "WARNING"
-                # Here, we're not incrementing counters because this isn't about roles at this level, but you might want to consider adding a counter for skipped logins if needed
             }
         }
 
-        # Summary Log
-        Write-Log -Message "There were $skippedRoles roles that were skipped as they do not exist on the target." -Level "INFO"
-        Write-Log -Message "There were $failedRoles roles where the assignment attempt failed." -Level "INFO"
-        Write-Log -Message "There were $successfulRoles roles successfully assigned." -Level "INFO"
+        # Summary Log for each role
+        foreach ($role in $RoleStats.Keys) {
+            $stats = $RoleStats[$role]
+            Write-Log -Message "There were $($stats.Total) logins to be added to the $role role on $DestinationInstance." -Level "INFO"
+            Write-Log -Message "There were $($stats.Skipped) logins skipped for the $role role because the role does not exist on the target." -Level "INFO"
+            Write-Log -Message "There were $($stats.Failed) logins that failed being added to the $role role." -Level "INFO"
+            Write-Log -Message "There were $($stats.Successful) logins successfully added to the $role role." -Level "INFO"
+        }
     }
     catch {
         Write-Log -Message "An error occurred while assigning roles to logins: $_" -Level "ERROR"
