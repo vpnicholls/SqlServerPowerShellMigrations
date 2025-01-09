@@ -429,16 +429,31 @@ function Migrate-Logins {
         [PSCredential]$Credential
     )
     try {
+        # Common system logins to exclude
+        $systemLogins = @(
+            "sa",
+            "##MS_PolicyEventProcessingLogin##",
+            "##MS_PolicyTsqlExecutionLogin##",
+            "NT AUTHORITY\SYSTEM",
+            "NT Service\MSSQLSERVER",
+            "NT SERVICE\SQLSERVERAGENT",
+            "NT SERVICE\SQLTELEMETRY",
+            "NT SERVICE\SQLWriter",
+            "NT SERVICE\Winmgmt"
+        )
+        
+        $combinedExcludedLogins = $ExcludedLogins + $systemLogins
+
         # Determine which logins to migrate based on $LoginType
         if ($LoginType -eq "SQL") {
-            $Logins = Get-DbaLogin -SqlInstance $SourceInstance -SqlCredential $Credential -Type SQL -ExcludeLogin $ExcludedLogins
+            $Logins = Get-DbaLogin -SqlInstance $SourceInstance -SqlCredential $Credential -Type SQL -ExcludeLogin $combinedExcludedLogins
         }
         elseif ($LoginType -eq "Windows") {
-            $Logins = Get-DbaLogin -SqlInstance $SourceInstance -SqlCredential $Credential -Type Windows -ExcludeLogin $ExcludedLogins
+            $Logins = Get-DbaLogin -SqlInstance $SourceInstance -SqlCredential $Credential -Type Windows -ExcludeLogin $combinedExcludedLogins
         }
         else {
             # If no specific LoginType is provided or if it's not recognized, migrate both SQL and Windows logins
-            $Logins = Get-DbaLogin -SqlInstance $SourceInstance -SqlCredential $Credential -ExcludeLogin $ExcludedLogins
+            $Logins = Get-DbaLogin -SqlInstance $SourceInstance -SqlCredential $Credential -ExcludeLogin $combinedExcludedLogins
         }
 
         Write-Log -Message "Migrating $($Logins.Count) logins from $SourceInstance to $DestinationInstance." -Level "INFO"
