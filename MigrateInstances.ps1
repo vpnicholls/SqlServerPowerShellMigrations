@@ -132,7 +132,7 @@ param (
 )
 
 # Generate log file name with datetime stamp
-$logFileName = Join-Path -Path $ScriptEventLogPath -ChildPath "MigrateInstancesLog_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
+$logFileName = Join-Path -Path $ScriptEventLogPath -ChildPath "MigrateInstancesLog_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
 
 # Define the function to write to the log file
 function Write-Log {
@@ -419,7 +419,6 @@ function Update-DatabaseSettings {
     }
 }
 
-# Define the function to migrate required logins
 function Migrate-Logins {
     param (
         [string]$SourceInstance,
@@ -458,6 +457,10 @@ function Migrate-Logins {
 
         Write-Log -Message "Migrating $($Logins.Count) logins from $SourceInstance to $DestinationInstance." -Level "INFO"
 
+        $skippedLogins = 0
+        $failedLogins = 0
+        $successfulLogins = 0
+
         # Migrate the logins to the destination instance
         $migratedLogins = $Logins | ForEach-Object {
             $loginName = $_.Name
@@ -466,6 +469,7 @@ function Migrate-Logins {
 
             if ($existingLogin) {
                 Write-Log -Message "Login '$loginName' already exists on $DestinationInstance. Skipping creation." -Level "WARNING"
+                $skippedLogins++
                 # Return an object to mimic the structure of Copy-DbaLogin's output for consistency
                 [PSCustomObject]@{
                     Name = $loginName
@@ -473,8 +477,19 @@ function Migrate-Logins {
                     Error = 'Login already exists'
                 }
             } else {
-                # If login does not exist, proceed with migration
-                Copy-DbaLogin -Source $SourceInstance -Destination $DestinationInstance -Login $loginName -SourceSqlCredential $Credential -DestinationSqlCredential $Credential -EnableException -WarningAction SilentlyContinue -ErrorAction Stop
+                try {
+                    $result = Copy-DbaLogin -Source $SourceInstance -Destination $DestinationInstance -Login $loginName -SourceSqlCredential $Credential -DestinationSqlCredential $Credential -EnableException -WarningAction SilentlyContinue -ErrorAction Stop
+                    if ($result.Status -eq 'Successful') {
+                        $successfulLogins++
+                    } else {
+                        $failedLogins++
+                        Write-Log -Message "Failed to migrate login: $($_.Name) - Error: $($result.Error)" -Level "ERROR"
+                    }
+                }
+                catch {
+                    $failedLogins++
+                    Write-Log -Message "Failed to migrate login: $loginName - Error: $_" -Level "ERROR"
+                }
             }
         }
 
@@ -483,12 +498,16 @@ function Migrate-Logins {
             if ($_.Status -eq 'Successful') {
                 Write-Log -Message "Successfully migrated login: $($_.Name)" -Level "SUCCESS"
             } elseif ($_.Status -eq 'Skipped') {
-                # Already logged as a warning above, but included here for completeness in logging
                 Write-Log -Message "Login migration skipped: $($_.Name) - Reason: $($_.Error)" -Level "INFO"
             } else {
                 Write-Log -Message "Failed to migrate login: $($_.Name) - Error: $($_.Error)" -Level "ERROR"
             }
         }
+
+        # Summary Log
+        Write-Log -Message "There were $skippedLogins logins that were skipped as they already exist on the target." -Level "INFO"
+        Write-Log -Message "There were $failedLogins logins that were not migrated as the attempts failed." -Level "INFO"
+        Write-Log -Message "There were $successfulLogins logins that were migrated successfully." -Level "INFO"
     }
     catch {
         Write-Log -Message "An error occurred while migrating logins: $_" -Level "ERROR"
@@ -512,7 +531,20 @@ function Add-LoginsToRoles {
         Write-Log -Message "Starting role assignment for logins from $SourceInstance to $DestinationInstance." -Level "INFO"
 
         # Retrieve logins from source instance, excluding specified logins
-        $SourceLogins = Get-DbaLogin -SqlInstance $SourceInstance -SqlCredential $Credential -ExcludeLogin $ExcludedLogins
+        $systemLogins = @(
+            "sa",
+            "##MS_PolicyEventProcessingLogin##",
+            "##MS_PolicyTsqlExecutionLogin##",
+            "NT AUTHORITY\SYSTEM",
+            "NT Service\MSSQLSERVER",
+            "NT SERVICE\SQLSERVERAGENT",
+            "NT SERVICE\SQLTELEMETRY",
+            "NT SERVICE\SQLWriter",
+            "NT SERVICE\Winmgmt"
+        )
+
+        $combinedExcludedLogins = $ExcludedLogins + $systemLogins
+        $SourceLogins = Get-DbaLogin -SqlInstance $SourceInstance -SqlCredential $Credential -ExcludeLogin $combinedExcludedLogins
 
         foreach ($login in $SourceLogins) {
             $loginName = $login.Name
