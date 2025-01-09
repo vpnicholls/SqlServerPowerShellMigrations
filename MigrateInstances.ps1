@@ -530,62 +530,66 @@ function Add-LoginsToRoles {
     try {
         Write-Log -Message "Starting role assignment for logins from $SourceInstance to $DestinationInstance." -Level "INFO"
 
-        # Retrieve logins from source instance, excluding specified logins
-        $systemLogins = @(
-            "sa",
-            "##MS_PolicyEventProcessingLogin##",
-            "##MS_PolicyTsqlExecutionLogin##",
-            "NT AUTHORITY\SYSTEM",
-            "NT Service\MSSQLSERVER",
-            "NT SERVICE\SQLSERVERAGENT",
-            "NT SERVICE\SQLTELEMETRY",
-            "NT SERVICE\SQLWriter",
-            "NT SERVICE\Winmgmt"
-        )
+        # Counters for summary
+        $skippedRoles = 0
+        $failedRoles = 0
+        $successfulRoles = 0
 
-        $combinedExcludedLogins = $ExcludedLogins + $systemLogins
-        $SourceLogins = Get-DbaLogin -SqlInstance $SourceInstance -SqlCredential $Credential -ExcludeLogin $combinedExcludedLogins
+        # Retrieve logins from source instance, excluding specified logins
+        $SourceLogins = Get-DbaLogin -SqlInstance $SourceInstance -SqlCredential $Credential -ExcludeLogin $ExcludedLogins
 
         foreach ($login in $SourceLogins) {
             $loginName = $login.Name
             Write-Log -Message "Processing login: $loginName" -Level "INFO"
 
-            # Get roles for this login from the source
-            $sourceRoles = $login.EnumRoles() | Where-Object { $_ -ne 'public' } # Exclude public role as it's default
+            # Check if the login exists on the destination
+            $destinationLogin = Get-DbaLogin -SqlInstance $DestinationInstance -SqlCredential $Credential -Login $loginName -ErrorAction SilentlyContinue
 
-            if ($sourceRoles.Count -gt 0) {
-                Write-Log -Message "Login $loginName has roles on source: $([string]::Join(", ", $sourceRoles))" -Level "INFO"
-                
-                # Check if the login exists on the destination
-                $destinationLogin = Get-DbaLogin -SqlInstance $DestinationInstance -SqlCredential $Credential -Login $loginName -ErrorAction SilentlyContinue
+            if ($destinationLogin) {
+                try {
+                    $sourceRoles = $login.EnumRoles() | Where-Object { $_ -ne 'public' } # Exclude public role as it's default
 
-                if ($destinationLogin) {
-                    # Add the login to each role it was part of on the source, if the role exists on the destination
-                    foreach ($role in $sourceRoles) {
-                        $destinationRole = Get-DbaRole -SqlInstance $DestinationInstance -SqlCredential $Credential -Role $role -ErrorAction SilentlyContinue
-                        if ($destinationRole) {
-                            Write-Log -Message "Adding login $loginName to role $role on $DestinationInstance." -Level "INFO"
-                            try {
-                                Add-DbaRoleMember -SqlInstance $DestinationInstance -SqlCredential $Credential -Role $role -Member $loginName -EnableException
-                                Write-Log -Message "Successfully added $loginName to role $role." -Level "SUCCESS"
+                    if ($sourceRoles.Count -gt 0) {
+                        Write-Log -Message "Login $loginName has roles on source: $([string]::Join(", ", $sourceRoles))" -Level "INFO"
+                        
+                        # Attempt to add each role
+                        foreach ($role in $sourceRoles) {
+                            $destinationRole = Get-DbaRole -SqlInstance $DestinationInstance -SqlCredential $Credential -Role $role -ErrorAction SilentlyContinue
+                            if ($destinationRole) {
+                                try {
+                                    Add-DbaRoleMember -SqlInstance $DestinationInstance -SqlCredential $Credential -Role $role -Member $loginName -EnableException
+                                    Write-Log -Message "Successfully added $loginName to role $role." -Level "SUCCESS"
+                                    $successfulRoles++
+                                }
+                                catch {
+                                    Write-Log -Message "Failed to add $loginName to role $($role): $_" -Level "ERROR"
+                                    $failedRoles++
+                                }
                             }
-                            catch {
-                                Write-Log -Message "Failed to add $loginName to role $($role): $_" -Level "ERROR"
+                            else {
+                                Write-Log -Message "Role $role does not exist on $DestinationInstance. Skipping for login $loginName." -Level "WARNING"
+                                $skippedRoles++
                             }
-                        }
-                        else {
-                            Write-Log -Message "Role $role does not exist on $DestinationInstance. Skipping for login $loginName." -Level "WARNING"
                         }
                     }
+                    else {
+                        Write-Log -Message "Login $loginName has no specific roles on $SourceInstance." -Level "INFO"
+                    }
                 }
-                else {
-                    Write-Log -Message "Login $loginName does not exist on $DestinationInstance. Skipping role assignment." -Level "WARNING"
+                catch {
+                    Write-Log -Message "Failed to enumerate roles for login $loginName: $_" -Level "ERROR"
                 }
             }
             else {
-                Write-Log -Message "Login $loginName has no specific roles on $SourceInstance." -Level "INFO"
+                Write-Log -Message "Login $loginName does not exist on $DestinationInstance. Skipping role assignment." -Level "WARNING"
+                # Here, we're not incrementing counters because this isn't about roles at this level, but you might want to consider adding a counter for skipped logins if needed
             }
         }
+
+        # Summary Log
+        Write-Log -Message "There were $skippedRoles roles that were skipped as they do not exist on the target." -Level "INFO"
+        Write-Log -Message "There were $failedRoles roles where the assignment attempt failed." -Level "INFO"
+        Write-Log -Message "There were $successfulRoles roles successfully assigned." -Level "INFO"
     }
     catch {
         Write-Log -Message "An error occurred while assigning roles to logins: $_" -Level "ERROR"
