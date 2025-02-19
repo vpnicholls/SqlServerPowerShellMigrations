@@ -115,11 +115,6 @@ function Migrate-SQLAgentJobs {
 -- Ensure job_id is correctly formatted
 DECLARE @jobId UNIQUEIDENTIFIER = '$jobId';
 
--- Shift existing steps down
-UPDATE msdb.dbo.sysjobsteps 
-SET step_id = step_id + 1
-WHERE job_id = @jobId;
-
 -- Add the new step at the beginning
 EXEC msdb.dbo.sp_add_jobstep 
     @job_id = @jobId, 
