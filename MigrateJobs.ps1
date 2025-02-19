@@ -107,35 +107,51 @@ function Migrate-SQLAgentJobs {
                 
                 # Get the job on the target to add the new step
                 $targetJob = Get-DbaAgentJob -SqlInstance $TargetServer -Job $jobName -SqlCredential $TargetCredentials
+                $jobId = $targetJob.JobID
+                $newStepName = "Check if Primary Replica"
 
-                # Create new job step
-                $newStep = @{
-                    SqlInstance = $TargetServer
-                    SqlCredential = $TargetCredentials
-                    Job = $targetJob
-                    StepName = "Check if Primary Replica"
-                    StepId = 1
-                    SubSystem = 'TransactSql'
-                    Command = @"
-DECLARE @preferredReplica int
+                # Use T-SQL to insert the new step at the beginning
+                $sqlCommand = @"
+-- Ensure job_id is correctly formatted
+DECLARE @jobId UNIQUEIDENTIFIER = '$jobId';
 
-SET @preferredReplica = (SELECT [master].sys.fn_hadr_backup_is_preferred_replica('$( $DatabaseName )'))
+-- Shift existing steps down
+UPDATE msdb.dbo.sysjobsteps 
+SET step_id = step_id + 1
+WHERE job_id = @jobId;
+
+-- Add the new step at the beginning
+EXEC msdb.dbo.sp_add_jobstep 
+    @job_id = @jobId, 
+    @step_name = N'$newStepName',
+    @step_id = 1,
+    @subsystem = N'TSQL',
+    @command = N'DECLARE @preferredReplica int
+
+SET @preferredReplica = (SELECT [master].sys.fn_hadr_backup_is_preferred_replica(''$DatabaseName'')) 
 
 IF (@preferredReplica = 1)
 BEGIN
-     SELECT 'This is the primary replica. Proceeding with the next step...'
+     SELECT ''This is the primary replica. Proceeding with the next step...''
 END
 ELSE 
 BEGIN
-    RAISERROR('This is not the primary replica. Aborting job.', 16, 1)
-END
+    RAISERROR(''This is not the primary replica. Aborting job.'', 16, 1)
+END',
+    @on_success_action = 3,  -- GoToNextStep
+    @on_fail_action = 1,     -- QuitWithSuccess (adjust if needed)
+    @database_name = N'master'
 "@
-                    OnSuccessAction = 'GoToNextStep'
-                    OnFailAction = 'QuitWithSuccess'
-                }
 
-                # Add the new step to the specific job
-                New-DbaAgentJobStep @newStep
+                # Execute the SQL command to insert the new step
+                try {
+                    Invoke-DbaQuery -SqlInstance $TargetServer -SqlCredential $TargetCredentials -Query $sqlCommand -Database master | Out-Null
+                    Write-Log -Message "New step '$( $newStepName )' added to job $( $jobName )." -Level "INFO"
+                } catch {
+                    Write-Log -Message "Failed to add new step '$( $newStepName )' to job $( $jobName ). Error: $( $_.Exception.Message )" -Level "ERROR"
+                    Write-Log -Message "Error details: $( $_.Exception.InnerException.Message )" -Level "ERROR"
+                    throw
+                }
 
                 # Disable job on target
                 $targetJob | Set-DbaAgentJob -Disabled | Out-Null
