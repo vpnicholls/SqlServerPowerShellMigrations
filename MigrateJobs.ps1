@@ -60,7 +60,7 @@ if (-not (Test-Path -Path $ScriptEventLogPath)) {
 # Generate log file name with datetime stamp
 $logFileName = Join-Path -Path $ScriptEventLogPath -ChildPath "FailoverLog_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
 
-# Define the function to write to the log file and console
+# Define the function to write to the log file
 function Write-Log {
     param (
         [Parameter(Mandatory=$true)]
@@ -107,13 +107,42 @@ function Migrate-SQLAgentJobs {
                 
                 # Get the job on the target to add the new step
                 $targetJob = Get-DbaAgentJob -SqlInstance $TargetServer -Job $jobName -SqlCredential $TargetCredentials
+                if (-not $targetJob) {
+                    Write-Log -Message "Failed to retrieve job $( $jobName ) on target server after copy." -Level "ERROR"
+                    continue
+                }
+
                 $jobId = $targetJob.JobID
                 $newStepName = "Check if Primary Replica"
 
-                # Use T-SQL to insert the new step at the beginning
+                # Debug Job ID
+                Write-Log -Message "Job ID retrieved: $jobId" -Level "DEBUG"
+
+                # Use T-SQL to shift existing steps and insert the new step at the beginning
                 $sqlCommand = @"
--- Ensure job_id is correctly formatted
-DECLARE @jobId UNIQUEIDENTIFIER = '$jobId';
+DECLARE @jobId UNIQUEIDENTIFIER;
+
+-- Fetch the job ID dynamically from the job name
+SELECT @jobId = job_id FROM msdb.dbo.sysjobs WHERE name = N'$jobName';
+
+IF @jobId IS NULL
+BEGIN
+    RAISERROR('Job ''$jobName'' not found.', 16, 1);
+    RETURN;
+END
+
+-- Shift existing steps down
+--UPDATE msdb.dbo.sysjobsteps 
+--SET step_id = step_id + 1
+--WHERE job_id = @jobId;
+
+-- Check if the step already exists and delete it
+IF EXISTS (SELECT 1 FROM msdb.dbo.sysjobsteps WHERE job_id = @jobId AND step_name = N'$newStepName')
+BEGIN
+    DECLARE @existingStepId INT;
+    SELECT @existingStepId = step_id FROM msdb.dbo.sysjobsteps WHERE job_id = @jobId AND step_name = N'$newStepName';
+    EXEC msdb.dbo.sp_delete_jobstep @job_id = @jobId, @step_id = @existingStepId;
+END
 
 -- Add the new step at the beginning
 EXEC msdb.dbo.sp_add_jobstep 
@@ -123,7 +152,7 @@ EXEC msdb.dbo.sp_add_jobstep
     @subsystem = N'TSQL',
     @command = N'DECLARE @preferredReplica int
 
-SET @preferredReplica = (SELECT [master].sys.fn_hadr_backup_is_preferred_replica(''$DatabaseName'')) 
+SET @preferredReplica = (SELECT [master].sys.fn_hadr_backup_is_preferred_replica(''$DatabaseName''))
 
 IF (@preferredReplica = 1)
 BEGIN
@@ -134,9 +163,12 @@ BEGIN
     RAISERROR(''This is not the primary replica. Aborting job.'', 16, 1)
 END',
     @on_success_action = 3,  -- GoToNextStep
-    @on_fail_action = 1,     -- QuitWithSuccess (adjust if needed)
-    @database_name = N'master'
+    @on_fail_action = 1,     -- QuitWithSuccess
+    @database_name = N'master';
 "@
+
+                # Debug SQL Command
+                Write-Log -Message "SQL Command being executed: $sqlCommand" -Level "DEBUG"
 
                 # Execute the SQL command to insert the new step
                 try {
@@ -144,8 +176,8 @@ END',
                     Write-Log -Message "New step '$( $newStepName )' added to job $( $jobName )." -Level "INFO"
                 } catch {
                     Write-Log -Message "Failed to add new step '$( $newStepName )' to job $( $jobName ). Error: $( $_.Exception.Message )" -Level "ERROR"
-                    Write-Log -Message "Error details: $( $_.Exception.InnerException.Message )" -Level "ERROR"
-                    throw
+                    Write-Log -Message "Error details: $( if ($_.Exception.InnerException) { $_.Exception.InnerException.Message } else { 'No inner exception' } )" -Level "ERROR"
+                    continue  # Skip to next job instead of throwing to avoid stopping the loop
                 }
 
                 # Disable job on target
