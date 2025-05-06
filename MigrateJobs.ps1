@@ -58,7 +58,7 @@ if (-not (Test-Path -Path $ScriptEventLogPath)) {
 }
 
 # Generate log file name with datetime stamp
-$logFileName = Join-Path -Path $ScriptEventLogPath -ChildPath "FailoverLog_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
+$logFileName = Join-Path -Path $ScriptEventLogPath -ChildPath "JobMigration_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
 
 # Define the function to write to the log file
 function Write-Log {
