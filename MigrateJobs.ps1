@@ -26,6 +26,15 @@
 
 .EXAMPLE
     .\MigrateJobs.ps1 -SourceServer "ServerA" -TargetServer "ServerB" -JobDatabaseMapping @{ "JobName1" = "Database1"; "JobName2" = "Database2" }
+
+.EXAMPLE
+    $JobDatabaseMapping = @{
+        "_Backup User Database" = @("master") 
+        "_Backup System Databases" = @("master")
+        "Some other job" = @("myDB1", "myDB2")
+    }
+    .\MigrateJobs.ps1 -SourceServer "ServerA" -TargetServer "ServerB" -JobDatabaseMapping $JobDatabaseMapping
+}
 #>
 
 param (
